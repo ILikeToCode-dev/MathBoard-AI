@@ -1,0 +1,8 @@
+{
+  "name": "Copy of MathBoard AI",
+  "description": "An intelligent AI math tutor with an integrated whiteboard and file management system.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
