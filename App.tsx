@@ -43,6 +43,9 @@ const App: React.FC = () => {
   const [activeNoteId, setActiveNoteId] = useState<string | null>(INITIAL_NOTE_ID);
   const [expandedFolders, setExpandedFolders] = useState<string[]>([INITIAL_ROOT_ID]);
   const [darkMode, setDarkMode] = useState(false);
+  
+  // State to bridge Whiteboard selection to Chat
+  const [capturedImage, setCapturedImage] = useState<string | null>(null);
 
   // -- Effects --
 
@@ -178,6 +181,10 @@ const App: React.FC = () => {
     }));
   }, [activeNoteId]);
 
+  const handleWhiteboardCapture = (imageDataUrl: string) => {
+      setCapturedImage(imageDataUrl);
+  };
+
 
   // -- Render --
   const activeNote = activeNoteId ? notes[activeNoteId] : null;
@@ -214,6 +221,8 @@ const App: React.FC = () => {
                         <Chat 
                             messages={activeNote.messages} 
                             setMessages={updateActiveNoteMessages}
+                            pendingAttachment={capturedImage}
+                            onClearPendingAttachment={() => setCapturedImage(null)}
                         />
                     )}
                 </div>
@@ -226,6 +235,7 @@ const App: React.FC = () => {
                             setPaths={updateActiveNotePaths}
                             viewport={activeNote.viewport}
                             setViewport={updateActiveNoteViewport}
+                            onCapture={handleWhiteboardCapture}
                         />
                      )}
                 </div>

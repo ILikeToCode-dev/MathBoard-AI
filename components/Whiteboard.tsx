@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { DrawingPath, Point } from '../types';
-import { Undo, Eraser, Pen, MousePointer, ZoomIn, ZoomOut, Trash2, Square, Circle, Minus } from 'lucide-react';
+import { Undo, Eraser, Pen, MousePointer, ZoomIn, ZoomOut, Trash2, Square, Circle, Minus, ScanEye } from 'lucide-react';
 
 interface WhiteboardProps {
   paths: DrawingPath[];
@@ -8,17 +8,21 @@ interface WhiteboardProps {
   viewport: { x: number; y: number; scale: number };
   setViewport: (viewport: { x: number; y: number; scale: number }) => void;
   readOnly?: boolean;
+  onCapture?: (imageDataUrl: string) => void;
 }
 
-type Tool = 'pen' | 'eraser' | 'highlighter' | 'pan' | 'rectangle' | 'circle' | 'line';
+type Tool = 'pen' | 'eraser' | 'highlighter' | 'pan' | 'rectangle' | 'circle' | 'line' | 'select-ai';
 
-const Whiteboard: React.FC<WhiteboardProps> = ({ paths, setPaths, viewport, setViewport, readOnly = false }) => {
+const Whiteboard: React.FC<WhiteboardProps> = ({ paths, setPaths, viewport, setViewport, readOnly = false, onCapture }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [currentTool, setCurrentTool] = useState<Tool>('pen');
   const [color, setColor] = useState('#000000');
   const [width, setWidth] = useState(2);
   const [currentPath, setCurrentPath] = useState<DrawingPath | null>(null);
+  
+  // For Selection Tool
+  const [selectionBox, setSelectionBox] = useState<{start: Point, end: Point} | null>(null);
 
   const handleUndo = () => {
     if (paths.length > 0) {
@@ -34,47 +38,71 @@ const Whiteboard: React.FC<WhiteboardProps> = ({ paths, setPaths, viewport, setV
     }
   };
 
-  // Drawing Logic
-  const getCanvasPoint = (e: React.PointerEvent): Point => {
+  // Helper to get raw screen coordinates relative to canvas
+  const getRawPoint = (e: React.PointerEvent): Point => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
     return {
-      x: (e.clientX - rect.left - viewport.x) / viewport.scale,
-      y: (e.clientY - rect.top - viewport.y) / viewport.scale,
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    };
+  };
+
+  // Helper to get world coordinates (taking zoom/pan into account)
+  const getCanvasPoint = (e: React.PointerEvent): Point => {
+    const raw = getRawPoint(e);
+    return {
+      x: (raw.x - viewport.x) / viewport.scale,
+      y: (raw.y - viewport.y) / viewport.scale,
       pressure: e.pressure,
     };
   };
 
   const startDrawing = (e: React.PointerEvent) => {
     if (readOnly) return;
-    if (currentTool === 'pan') return;
-
+    
     e.currentTarget.setPointerCapture(e.pointerId);
     setIsDrawing(true);
+
+    if (currentTool === 'select-ai') {
+        const raw = getRawPoint(e);
+        setSelectionBox({ start: raw, end: raw });
+        return;
+    }
+
+    if (currentTool === 'pan') return;
+
     const point = getCanvasPoint(e);
 
     setCurrentPath({
       id: Date.now().toString(),
       points: [point],
-      color: currentTool === 'eraser' ? '#ffffff' : (currentTool === 'highlighter' ? color + '50' : color), // Simple hack for highlighter transparency
+      color: currentTool === 'eraser' ? '#ffffff' : (currentTool === 'highlighter' ? color + '50' : color),
       width: currentTool === 'eraser' ? 20 : (currentTool === 'highlighter' ? 15 : width),
       tool: currentTool as any,
     });
   };
 
   const draw = (e: React.PointerEvent) => {
-    if (!isDrawing || !currentPath) {
-      // Panning logic
-      if (currentTool === 'pan' && e.buttons === 1) {
+    if (!isDrawing) return;
+
+    if (currentTool === 'select-ai') {
+        const raw = getRawPoint(e);
+        setSelectionBox(prev => prev ? { ...prev, end: raw } : null);
+        return;
+    }
+
+    if (currentTool === 'pan' && e.buttons === 1) {
          setViewport({
            ...viewport,
            x: viewport.x + e.movementX,
            y: viewport.y + e.movementY
          });
-      }
-      return;
+         return;
     }
+
+    if (!currentPath) return;
 
     const point = getCanvasPoint(e);
     
@@ -98,6 +126,36 @@ const Whiteboard: React.FC<WhiteboardProps> = ({ paths, setPaths, viewport, setV
     if (!isDrawing) return;
     setIsDrawing(false);
     e.currentTarget.releasePointerCapture(e.pointerId);
+
+    if (currentTool === 'select-ai' && selectionBox && canvasRef.current && onCapture) {
+        // Calculate bounding box
+        const x = Math.min(selectionBox.start.x, selectionBox.end.x);
+        const y = Math.min(selectionBox.start.y, selectionBox.end.y);
+        const w = Math.abs(selectionBox.start.x - selectionBox.end.x);
+        const h = Math.abs(selectionBox.start.y - selectionBox.end.y);
+
+        if (w > 5 && h > 5) { // Minimum size threshold
+            try {
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = w;
+                tempCanvas.height = h;
+                const tCtx = tempCanvas.getContext('2d');
+                
+                // Capture exactly what is seen on screen
+                tCtx?.drawImage(canvasRef.current, x, y, w, h, 0, 0, w, h);
+                
+                const dataUrl = tempCanvas.toDataURL('image/png');
+                onCapture(dataUrl);
+            } catch (err) {
+                console.error("Capture failed", err);
+            }
+        }
+        
+        setSelectionBox(null);
+        setCurrentTool('pen'); // Reset to pen after capture
+        return;
+    }
+
     if (currentPath) {
       setPaths([...paths, currentPath]);
       setCurrentPath(null);
@@ -106,18 +164,11 @@ const Whiteboard: React.FC<WhiteboardProps> = ({ paths, setPaths, viewport, setV
 
   // Zoom Logic
   const handleWheel = useCallback((e: React.WheelEvent) => {
-    // e.deltaY < 0 means scrolling up (pushing away) -> Zoom In
-    // e.deltaY > 0 means scrolling down (pulling close) -> Zoom Out
-    
-    // Normalize delta roughly
     const zoomIntensity = 0.1;
     const direction = -Math.sign(e.deltaY); 
     const delta = direction * zoomIntensity;
-
-    // Limits
     const newScale = Math.min(Math.max(0.1, viewport.scale * (1 + delta)), 5);
     
-    // Zoom focused on mouse position
     const rect = e.currentTarget.getBoundingClientRect();
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
@@ -133,7 +184,6 @@ const Whiteboard: React.FC<WhiteboardProps> = ({ paths, setPaths, viewport, setV
 
   const manualZoom = (delta: number) => {
     const newScale = Math.min(Math.max(0.1, viewport.scale + delta), 5);
-    // Zoom focused on center of screen
     const canvas = canvasRef.current;
     if (canvas) {
         const centerX = canvas.width / 2;
@@ -147,10 +197,9 @@ const Whiteboard: React.FC<WhiteboardProps> = ({ paths, setPaths, viewport, setV
          setViewport({ ...viewport, scale: newScale });
     }
   };
-  
+
   const handleSliderZoom = (e: React.ChangeEvent<HTMLInputElement>) => {
       const newScale = parseFloat(e.target.value);
-      // Zoom focused on center
       const canvas = canvasRef.current;
       if (canvas) {
         const centerX = canvas.width / 2;
@@ -198,7 +247,27 @@ const Whiteboard: React.FC<WhiteboardProps> = ({ paths, setPaths, viewport, setV
 
     ctx.restore();
 
-  }, [paths, currentPath, viewport, isDrawing]);
+    // Draw Selection Box Overlay (in screen space)
+    if (selectionBox) {
+        const x = selectionBox.start.x;
+        const y = selectionBox.start.y;
+        const w = selectionBox.end.x - selectionBox.start.x;
+        const h = selectionBox.end.y - selectionBox.start.y;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.strokeStyle = '#6366f1'; // Indigo
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.strokeRect(x, y, w, h);
+        
+        // Semi-transparent fill
+        ctx.fillStyle = 'rgba(99, 102, 241, 0.1)';
+        ctx.fillRect(x, y, w, h);
+        ctx.restore();
+    }
+
+  }, [paths, currentPath, viewport, isDrawing, selectionBox]);
 
   const drawGrid = (ctx: CanvasRenderingContext2D, w: number, h: number, vp: {x:number, y:number, scale:number}) => {
       const gridSize = 40 * vp.scale;
@@ -206,10 +275,9 @@ const Whiteboard: React.FC<WhiteboardProps> = ({ paths, setPaths, viewport, setV
       const offsetY = vp.y % gridSize;
 
       ctx.beginPath();
-      ctx.strokeStyle = '#e2e8f0'; // Light grid color
+      ctx.strokeStyle = '#e2e8f0'; 
       ctx.lineWidth = 1;
 
-      // If grid gets too dense, fade it out or double size
       if (gridSize < 10) ctx.globalAlpha = 0.2;
       else ctx.globalAlpha = 1;
 
@@ -274,6 +342,10 @@ const Whiteboard: React.FC<WhiteboardProps> = ({ paths, setPaths, viewport, setV
     >
       {/* Toolbar */}
       <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-white dark:bg-slate-800 shadow-lg rounded-full px-4 py-2 flex items-center gap-2 z-10 border border-slate-200 dark:border-slate-700 overflow-x-auto max-w-[95%]">
+        <button onClick={() => setCurrentTool('select-ai')} className={`p-2 rounded-full shrink-0 ${currentTool === 'select-ai' ? 'bg-indigo-600 text-white shadow-md' : 'hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300'}`} title="AI Scan Area">
+           <ScanEye size={20} />
+        </button>
+        <div className="w-px h-6 bg-slate-300 dark:bg-slate-600 mx-1 shrink-0"></div>
         <button onClick={() => setCurrentTool('pan')} className={`p-2 rounded-full shrink-0 ${currentTool === 'pan' ? 'bg-indigo-100 text-indigo-600' : 'hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300'}`} title="Pan">
            <MousePointer size={20} />
         </button>

@@ -6,7 +6,8 @@ import { Send, Image as ImageIcon, Loader2, User, Bot } from 'lucide-react';
 interface ChatProps {
   messages: ChatMessage[];
   setMessages: (msgs: ChatMessage[]) => void;
-  onAnalysisRequest?: (prompt: string) => void;
+  pendingAttachment?: string | null; // base64 data url
+  onClearPendingAttachment?: () => void;
 }
 
 const MessageContent: React.FC<{ text: string }> = ({ text }) => {
@@ -49,14 +50,11 @@ const MessageContent: React.FC<{ text: string }> = ({ text }) => {
       };
 
       // 1. Process Block Math: $$...$$
-      // We use a regex that captures content between $$ and $$
       let processed = text.replace(/\$\$([\s\S]*?)\$\$/g, (match, equation) => {
         return processMath(equation, true);
       });
 
       // 2. Process Inline Math: $...$
-      // Match $...$ but exclude cases where it might be a normal dollar amount (simplified)
-      // We look for $ followed by non-$ chars followed by $
       processed = processed.replace(/\$([^$\n]+?)\$/g, (match, equation) => {
         return processMath(equation, false);
       });
@@ -80,16 +78,13 @@ const MessageContent: React.FC<{ text: string }> = ({ text }) => {
       }
 
       // 6. Restore Math Placeholders
-      // We iterate over keys to ensure we replace exactly what we stored
       mathMap.forEach((renderedHtml, id) => {
-        // Global replace for the ID
         html = html.replace(new RegExp(id, 'g'), renderedHtml);
       });
 
       contentRef.current!.innerHTML = html;
     };
 
-    // Check if scripts are loaded, if not wait briefly
     if ((window as any).katex && (window as any).marked) {
       renderText();
     } else {
@@ -102,12 +97,13 @@ const MessageContent: React.FC<{ text: string }> = ({ text }) => {
   return <div ref={contentRef} className="prose prose-sm dark:prose-invert max-w-none leading-relaxed break-words" />;
 };
 
-const Chat: React.FC<ChatProps> = ({ messages, setMessages }) => {
+const Chat: React.FC<ChatProps> = ({ messages, setMessages, pendingAttachment, onClearPendingAttachment }) => {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [attachment, setAttachment] = useState<{ mimeType: string; data: string } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -116,6 +112,21 @@ const Chat: React.FC<ChatProps> = ({ messages, setMessages }) => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Handle incoming pending attachments from Whiteboard
+  useEffect(() => {
+    if (pendingAttachment) {
+        const base64Data = pendingAttachment.split(',')[1];
+        setAttachment({
+            mimeType: 'image/png',
+            data: base64Data
+        });
+        setInput("Please analyze this selected area and help me solve it.");
+        onClearPendingAttachment?.();
+        // Focus the input so user can just hit enter
+        inputRef.current?.focus();
+    }
+  }, [pendingAttachment, onClearPendingAttachment]);
 
   const handleSend = async () => {
     if ((!input.trim() && !attachment) || isLoading) return;
@@ -160,7 +171,6 @@ const Chat: React.FC<ChatProps> = ({ messages, setMessages }) => {
     const reader = new FileReader();
     reader.onloadend = () => {
       const base64String = reader.result as string;
-      // Extract pure base64 part (remove "data:image/png;base64,")
       const base64Data = base64String.split(',')[1];
       setAttachment({
         mimeType: file.type,
@@ -186,7 +196,7 @@ const Chat: React.FC<ChatProps> = ({ messages, setMessages }) => {
           <div className="text-center text-slate-400 mt-10">
             <Bot size={48} className="mx-auto mb-2 opacity-20" />
             <p>Start a conversation to learn math!</p>
-            <p className="text-sm">Ask about algebra, geometry, or upload a problem.</p>
+            <p className="text-sm">Ask about algebra, geometry, or use the <b>Scan</b> tool on the whiteboard.</p>
           </div>
         )}
         {messages.map((msg) => (
@@ -244,6 +254,7 @@ const Chat: React.FC<ChatProps> = ({ messages, setMessages }) => {
           
           <div className="flex-1 relative">
               <textarea
+                ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
